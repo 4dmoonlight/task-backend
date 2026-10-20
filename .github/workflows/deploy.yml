@@ -13,6 +13,25 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    # 用真实 Postgres 跑集成测试，确保持久化逻辑在部署前已被验证
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: taskdb
+          POSTGRES_USER: taskuser
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg2://taskuser:ci-only-password@127.0.0.1:5432/taskdb
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -24,10 +43,13 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Verify application import
         run: python -c "from main import app"
+
+      - name: Run integration tests
+        run: pytest -q
 
       - name: Build Docker image
         run: docker build -t task-backend:test .
@@ -47,7 +69,7 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          source: "Dockerfile,compose.yml,main.py,requirements.txt,.dockerignore"
+          source: "Dockerfile,compose.yml,main.py,db.py,requirements.txt,.dockerignore"
           target: "/opt/task-backend"
           overwrite: true
 
@@ -62,8 +84,16 @@ jobs:
           script: |
             set -e
             cd /opt/task-backend
+            touch .env
+            # 首次部署生成随机数据库密码并固化到 .env，后续部署复用同一个
+            # 注意：密码在 Postgres 数据卷初始化时写入，之后不要手改
+            if ! grep -q '^POSTGRES_PASSWORD=' .env; then
+              echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
+              echo "POSTGRES_PASSWORD generated for first deploy"
+            fi
+            chmod 600 .env
             docker compose up -d --build --remove-orphans
-            sleep 5
-            curl --fail --retry 5 --retry-delay 2 \
+            # 首次启动需要初始化数据卷并建表，这里留足重试时间
+            curl --fail --retry 20 --retry-delay 3 --retry-connrefused \
               http://127.0.0.1:8000/health
             docker image prune -f

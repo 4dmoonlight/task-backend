@@ -1,4 +1,24 @@
 services:
+  db:
+    image: postgres:16-alpine
+    container_name: task-backend-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-taskdb}
+      POSTGRES_USER: ${POSTGRES_USER:-taskuser}
+      # 密码必须在 .env 中提供，缺失时直接报错而不是用弱默认值启动
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD 未设置，请在 /opt/task-backend/.env 中配置}
+    volumes:
+      # 命名卷：容器重建、镜像重新构建都不会丢数据
+      - pgdata:/var/lib/postgresql/data
+    # 不映射宿主端口，数据库只在 compose 内部网络可达
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-taskuser} -d ${POSTGRES_DB:-taskdb}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
   api:
     build:
       context: .
@@ -8,3 +28,13 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      # 由上面的 POSTGRES_* 拼装，保证与 db 服务的凭据始终一致
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-taskuser}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-taskdb}
+    depends_on:
+      db:
+        # 等数据库健康检查通过再启动，避免首次请求打空
+        condition: service_healthy
+
+volumes:
+  pgdata:

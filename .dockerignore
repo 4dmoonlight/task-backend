@@ -4,3 +4,7 @@ venv/
 __pycache__/
 *.pyc
 .env
+.pytest_cache/
+*.db
+test_main.py
+requirements-dev.txt
