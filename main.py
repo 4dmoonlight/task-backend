@@ -40,6 +40,13 @@ def health_check():
 def get_items():
     return items_db
 
+@app.get("/api/v1/items/{item_id}", response_model=ItemResponse)
+def get_item(item_id: int):
+    for item in items_db:
+        if item["id"] == item_id:
+            return item
+    raise HTTPException(status_code=404, detail="Item not found")
+
 @app.post("/api/v1/items", response_model=ItemResponse)
 def create_item(item: ItemCreate):
     new_record = {
