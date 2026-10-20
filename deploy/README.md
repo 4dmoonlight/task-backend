@@ -29,26 +29,46 @@ push 到 `main` 即自动部署，无需手工操作。流程见
 
 ## 一次性配置：HTTPS
 
-只需在服务器上跑一次，之后证书自动续期：
+只需在服务器上跑一次，之后证书自动续期。
 
 ```bash
 cd /opt/task-backend
+
+# 方式一：不用域名，直接用 <公网IP>.sslip.io（最快，但见下方限额说明）
 sudo bash deploy/setup-https.sh 你的邮箱@example.com
+
+# 方式二：用自己的域名或免费子域（推荐）
+sudo bash deploy/setup-https.sh 你的邮箱@example.com myapp.duckdns.org
 ```
 
-脚本会用 `<公网IP>.sslip.io` 作为主机名（免注册域名），在
-`/etc/nginx/conf.d/task-backend.conf` 新增一个独立站点，然后用 certbot
-申请 Let's Encrypt 证书。**不会改动 nginx 主配置或已有站点。**
+脚本会在 `/etc/nginx/conf.d/task-backend.conf` 新增一个独立站点，然后用
+certbot 申请 Let's Encrypt 证书。**不会改动 nginx 主配置或已有站点**，且在
+`nginx -t` 校验失败时直接中止，不会 reload 坏配置。
 
-完成后接口基地址是 `https://<公网IP>.sslip.io`。
+完成后接口基地址即 `https://<你的主机名>`。
 
-### 注意
+### 域名选择：注意 Public Suffix List
 
-- `sslip.io` / `nip.io` **不在 Public Suffix List 中**，Let's Encrypt 的
-  每域名限额由全体用户共享。签发失败时换另一个域名重试：
-  `sudo bash deploy/setup-https.sh 邮箱 <IP> nip.io`
-- 正式上线建议自备域名，把 `server_name` 换成自己的域名后重跑 certbot，
-  不受共享限额影响。
+Let's Encrypt 按「注册域名」计算签发限额。域名**在 PSL 上**则限额独享，
+**不在 PSL 上**则与该域名的全体使用者共享，可能签发或续期失败。
+
+| 域名 | 在 PSL | 说明 |
+|---|---|---|
+| 自有域名 | ✅ | 最可靠。`.xyz`/`.top` 首年常仅 1-3 美元 |
+| `duckdns.org` | ✅ | 免费，GitHub 登录即可建子域，支持 TXT 记录 |
+| `is-a.dev` / `js.org` | ✅ | 免费，提 PR 申请，需面向开发者/开源项目 |
+| `eu.org` | ✅ | 免费且永久，人工审核需数天 |
+| `sslip.io` / `nip.io` | ❌ | 免注册、把 IP 编码在域名里，**限额共享** |
+
+`sslip.io` 适合联调自测。签发失败时脚本会提示换备用域名：
+
+```bash
+sudo bash deploy/setup-https.sh 邮箱 <IP> nip.io
+```
+
+换成 PSL 内的域名时，把新主机名作为第二个参数重跑即可（记得先把 DNS 指向
+服务器公网 IP）。原有的 `/etc/nginx/conf.d/task-backend.conf` 需要先删除或
+改掉其中的 `server_name`，否则两个站点会冲突。
 
 ## 环境变量
 

@@ -3,14 +3,22 @@
 # 一次性脚本：让服务器上已有的 nginx 以 HTTPS 对外提供 task-backend。
 #
 # 用法（在服务器上执行，需要 root）：
-#   sudo bash setup-https.sh <你的邮箱>              # 自动探测公网 IP
-#   sudo bash setup-https.sh <你的邮箱> <公网IP>     # 手动指定 IP
-#   sudo bash setup-https.sh <你的邮箱> <公网IP> nip.io   # 换用 nip.io（限额被占满时的备选）
+#   sudo bash setup-https.sh <邮箱>                    # 自动探测公网 IP，用 <IP>.sslip.io
+#   sudo bash setup-https.sh <邮箱> <主机名>           # 指定任意域名（DuckDNS / 自有域名）
+#   sudo bash setup-https.sh <邮箱> <公网IP>           # 指定 IP，仍拼成 <IP>.sslip.io
+#   sudo bash setup-https.sh <邮箱> <公网IP> nip.io    # 换备用 IP 域名（限额被占满时）
+#
+# 例：
+#   sudo bash setup-https.sh me@foo.com myapp.duckdns.org
+#   sudo bash setup-https.sh me@foo.com api.mydomain.com
 #
 # 它做三件事：
-#   1. 用 <公网IP>.sslip.io 当主机名（无需注册域名，该服务把 IP 直接编码在域名里）
+#   1. 确定对外主机名（不传域名时用 <公网IP>.sslip.io，无需注册域名）
 #   2. 在 /etc/nginx/conf.d/ 新增一个独立站点，反向代理到 127.0.0.1:8000
 #   3. 用 certbot 申请 Let's Encrypt 证书，并交给 systemd 定时自动续期
+#
+# 注意：sslip.io / nip.io 不在 Public Suffix List 上，Let's Encrypt 的限额由
+# 全体用户共享，可能签发失败。duckdns.org 等在 PSL 上的域名限额独享，更可靠。
 #
 # 安全边界：只新增一个站点文件，不改 nginx 主配置，不碰服务器上已有的其他站点。
 # 这是一次性的主机层配置，所以没有放进每次部署的 CI 流程里——
@@ -19,7 +27,7 @@
 set -euo pipefail
 
 EMAIL="${1:-}"
-IP_ARG="${2:-}"
+TARGET="${2:-}"
 BASE_DOMAIN="${3:-sslip.io}"
 
 SITE="task-backend"
@@ -51,30 +59,82 @@ fi
 
 # ---------- 确定主机名 ----------
 
-if [ -n "$IP_ARG" ]; then
-  IP="$IP_ARG"
-else
+is_ipv4() {
+  printf '%s' "$1" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$' || return 1
+  for octet in $(printf '%s' "$1" | tr '.' ' '); do
+    [ "$octet" -le 255 ] || return 1
+  done
+  return 0
+}
+
+# 逐段校验主机名。这个值会被拼进 nginx 配置，所以严格限制字符集。
+is_hostname() {
+  printf '%s' "$1" | grep -qE '^[A-Za-z0-9.-]+$' || return 1
+  # 排除开头/结尾的点和连续的点（会产生空标签）
+  case "$1" in
+    .*|*.|*..*) return 1 ;;
+  esac
+  # 必须是多段的完整域名
+  case "$1" in
+    *.*) ;;
+    *) return 1 ;;
+  esac
+  # 每一段都不能以连字符开头或结尾
+  for label in $(printf '%s' "$1" | tr '.' ' '); do
+    printf '%s' "$label" \
+      | grep -qE '^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$' || return 1
+  done
+  return 0
+}
+
+detect_ip() {
+  curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null \
+    || curl -fsS --max-time 10 https://ifconfig.me 2>/dev/null \
+    || true
+}
+
+IP=""
+HOST=""
+HOST_IS_EXPLICIT=0
+
+if [ -z "$TARGET" ]; then
+  # 没传第二个参数：探测公网 IP，拼成 <IP>.sslip.io
   info "探测公网 IP"
-  IP="$(curl -fsS --max-time 10 https://api.ipify.org 2>/dev/null \
-     || curl -fsS --max-time 10 https://ifconfig.me 2>/dev/null \
-     || true)"
-  [ -n "$IP" ] || die "探测不到公网 IP，请作为第二个参数手动传入"
+  IP="$(detect_ip)"
+  [ -n "$IP" ] || die "探测不到公网 IP，请作为第二个参数手动传入 IP 或域名"
+  is_ipv4 "$IP" || die "探测到的 '$IP' 不是合法 IPv4，请手动指定"
+  HOST="${IP}.${BASE_DOMAIN}"
+elif is_ipv4 "$TARGET"; then
+  # 传的是 IP：拼成 <IP>.sslip.io
+  IP="$TARGET"
+  HOST="${IP}.${BASE_DOMAIN}"
+else
+  # 传的是主机名：直接用（DuckDNS、自有域名等）
+  # 纯数字加点但不是合法 IPv4 —— 多半是打错的 IP，明确报错而不是当域名用
+  if printf '%s' "$TARGET" | grep -qE '^[0-9.]+$'; then
+    die "'$TARGET' 不是合法的 IPv4 地址（每段必须 0-255）"
+  fi
+  is_hostname "$TARGET" \
+    || die "'$TARGET' 不是合法的主机名。需要形如 myapp.duckdns.org"
+  HOST="$TARGET"
+  HOST_IS_EXPLICIT=1
 fi
 
-# 严格校验 IPv4，避免把垃圾字符串拼进域名
-if ! printf '%s' "$IP" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$'; then
-  die "'$IP' 不是合法的 IPv4 地址"
-fi
-for octet in $(printf '%s' "$IP" | tr '.' ' '); do
-  [ "$octet" -le 255 ] || die "'$IP' 不是合法的 IPv4 地址"
-done
-
-HOST="${IP}.${BASE_DOMAIN}"
 info "将使用主机名: ${HOST}"
 
-# 确认该域名真的解析回本机 IP，否则 HTTP-01 校验必然失败
+# 确认域名解析回本机，否则 Let's Encrypt 的 HTTP-01 校验必然失败
 RESOLVED="$(getent hosts "$HOST" 2>/dev/null | awk '{print $1}' | head -1 || true)"
-if [ -n "$RESOLVED" ] && [ "$RESOLVED" != "$IP" ]; then
+if [ "$HOST_IS_EXPLICIT" -eq 1 ]; then
+  [ -n "$IP" ] || IP="$(detect_ip)"
+  if [ -z "$RESOLVED" ]; then
+    echo "提示: ${HOST} 当前解析不到任何地址。"
+    echo "      请先在域名服务商（或 DuckDNS 后台）把它指向 ${IP:-本机公网 IP}，否则证书申请会失败。"
+  elif [ -n "$IP" ] && [ "$RESOLVED" != "$IP" ]; then
+    # 不直接退出：域名可能挂在 CDN 后面，这种情况下不一致是正常的
+    echo "警告: ${HOST} 解析到 ${RESOLVED}，而本机公网 IP 是 ${IP}。"
+    echo "      如果没有套 CDN，证书申请会失败——请先改好 DNS 解析。"
+  fi
+elif [ -n "$RESOLVED" ] && [ "$RESOLVED" != "$IP" ]; then
   die "${HOST} 解析到 ${RESOLVED}，与预期的 ${IP} 不一致"
 fi
 
@@ -149,10 +209,16 @@ if ! certbot --nginx \
       --email "$EMAIL" \
       --redirect; then
   echo >&2
-  echo "证书申请失败。最常见的两个原因：" >&2
+  echo "证书申请失败。常见原因：" >&2
   echo "  1. 公网无法访问本机 80 端口（安全组/防火墙没放行）" >&2
-  echo "  2. ${BASE_DOMAIN} 的 Let's Encrypt 共享限额被占满" >&2
-  echo "     —— 换另一个域名重试：sudo bash setup-https.sh $EMAIL $IP nip.io" >&2
+  echo "  2. ${HOST} 的 DNS 没有正确解析到本机公网 IP" >&2
+  if [ "$HOST_IS_EXPLICIT" -eq 0 ]; then
+    echo "  3. ${BASE_DOMAIN} 不在 Public Suffix List 上，Let's Encrypt 限额由全体" >&2
+    echo "     用户共享，可能已被占满。两个办法：" >&2
+    echo "       换备用域名：sudo bash setup-https.sh $EMAIL $IP nip.io" >&2
+    echo "       换 PSL 内的免费域名（限额独享），如 duckdns.org 注册一个子域后：" >&2
+    echo "       sudo bash setup-https.sh $EMAIL 你的名字.duckdns.org" >&2
+  fi
   exit 1
 fi
 
