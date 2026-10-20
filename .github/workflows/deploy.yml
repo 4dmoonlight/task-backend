@@ -92,8 +92,28 @@ jobs:
               echo "POSTGRES_PASSWORD generated for first deploy"
             fi
             chmod 600 .env
-            docker compose up -d --build --remove-orphans
-            # 首次启动需要初始化数据卷并建表，这里留足重试时间
-            curl --fail --retry 20 --retry-delay 3 --retry-connrefused \
-              http://127.0.0.1:8000/health
+            # --wait：由 compose 的健康检查判定就绪，失败时打印日志便于定位
+            if ! docker compose up -d --build --remove-orphans --wait --wait-timeout 180; then
+              echo "::error::服务未能进入健康状态"
+              docker compose ps
+              docker compose logs --tail 100
+              exit 1
+            fi
+            # 从宿主再确认一次端口映射可用。不依赖 curl 的 --retry-all-errors，
+            # 老版本 curl 不支持，且 --retry 不会重试 connection reset
+            ok=0
+            for _ in $(seq 1 30); do
+              if curl --fail --silent --max-time 5 http://127.0.0.1:8000/health; then
+                ok=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$ok" -ne 1 ]; then
+              echo "::error::宿主探活失败"
+              docker compose ps
+              docker compose logs --tail 100
+              exit 1
+            fi
+            echo "health check passed"
             docker image prune -f
