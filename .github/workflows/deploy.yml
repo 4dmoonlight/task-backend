@@ -31,6 +31,12 @@ jobs:
 
     env:
       DATABASE_URL: postgresql+psycopg2://taskuser:ci-only-password@127.0.0.1:5432/taskdb
+      # main.py 在 import 时就会读取 API_KEY，缺失直接 raise RuntimeError，
+      # 而下面的 "Verify application import" 一步会导入 main，所以这里必须给值。
+      # 这是固定的 CI 假值，仅供 import 校验与 pytest 使用；
+      # 生产密钥只存在于服务器的 .env，绝不写进 workflow。
+      # （test_main.py 在 import main 之前会把这个值覆盖成 test-api-key。）
+      API_KEY: ci-only-api-key
 
     steps:
       - name: Checkout source
@@ -69,7 +75,22 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SERVER_SSH_KEY }}
           port: ${{ secrets.SERVER_PORT }}
-          source: "Dockerfile,compose.yml,main.py,db.py,requirements.txt,.dockerignore,deploy/setup-https.sh"
+          # 显式白名单：只上传运行所需文件。
+          #
+          # 关于 H5 介绍页：
+          #   deploy/h5.conf 是**版本化的静态配置文件**，随源码同步到服务器的
+          #   /opt/task-backend/deploy/h5.conf。CI 只负责同步，**不安装**——
+          #   安装是一个一次性的 root 动作：
+          #       sudo bash deploy/install-h5-site.sh
+          #   由人执行一次即可。之后改页面内容只需要 push：web/ 同步过去，
+          #   nginx 直接读文件，无需 root、无需重跑安装脚本。
+          #   不把 nginx 配置的安装放进 CI，是为了不保留任何常驻的 root 入口。
+          #
+          # 注意 source 里写的是目录名 `web`，不是 `web/*`：scp-action 传目录时
+          # 会保留目录名，落到 /opt/task-backend/web/；写成 web/* 会把文件摊平到
+          # /opt/task-backend/ 根下，nginx 的 root 就指不到 index.html 了。
+          # deploy/ 下的脚本同理保留 deploy/ 这一层。
+          source: "Dockerfile,compose.yml,main.py,db.py,requirements.txt,.dockerignore,deploy/setup-https.sh,deploy/install-h5-site.sh,deploy/h5.conf,web"
           target: "/opt/task-backend"
           overwrite: true
 
@@ -85,8 +106,12 @@ jobs:
             set -e
             cd /opt/task-backend
             touch .env
-            # 首次部署生成随机数据库密码并固化到 .env，后续部署复用同一个
-            # 注意：密码在 Postgres 数据卷初始化时写入，之后不要手改
+            # API_KEY 由服务器本地的 .env 维护，CI 既不生成也不覆盖，
+            # 更不要把密钥写进本 workflow 或任何提交进仓库的文件。
+            # 下面这段只负责补 POSTGRES_PASSWORD：缺失时随机生成一次并固化，
+            # 之后每次部署都复用，不会冲掉 .env 里已有的 API_KEY 等条目。
+            # 注意：首次部署前需人工在 .env 里加一行 API_KEY=<密钥>，
+            # 否则 api 容器会因缺 API_KEY 拒绝启动（main.py 里显式 raise）。
             if ! grep -q '^POSTGRES_PASSWORD=' .env; then
               echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)" >> .env
               echo "POSTGRES_PASSWORD generated for first deploy"

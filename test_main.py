@@ -1,5 +1,18 @@
 """接口集成测试：在真实 Postgres 上验证读写、过滤与持久化。"""
 
+import os
+
+# main.py 在 import 时就会读取 API_KEY，缺失直接抛 RuntimeError，所以必须在
+# import main 之前设好。这里用固定的测试值，绝不使用生产密钥。
+#
+# 用直接赋值而不是 setdefault：如果开发者本地 shell 里恰好导出了生产 API_KEY，
+# setdefault 会保留它，而 client fixture 发的是下面的测试 key，结果全部 401。
+# 测试必须不依赖环境里的残留变量。
+TEST_API_KEY = "test-api-key"
+os.environ["API_KEY"] = TEST_API_KEY
+# 同理：确保「文档默认关闭」这条用例不受本机 ENABLE_DOCS 影响。
+os.environ.pop("ENABLE_DOCS", None)
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
@@ -9,14 +22,16 @@ from db import Item
 from main import app
 
 ITEMS = "/api/v1/items"
+AUTH = {"X-API-Key": TEST_API_KEY}
 
 IS_POSTGRES = db_module.engine.dialect.name == "postgresql"
 
 
 @pytest.fixture()
 def client():
-    # 进入上下文会触发 lifespan，由 init_db 建表
-    with TestClient(app) as test_client:
+    # 进入上下文会触发 lifespan，由 init_db 建表。
+    # 通过默认请求头带上测试 key，现有用例无需逐个改动。
+    with TestClient(app, headers=AUTH) as test_client:
         with db_module.engine.begin() as conn:
             # 每个用例前清空，保证用例之间互不影响
             if IS_POSTGRES:
@@ -164,3 +179,41 @@ def test_data_is_persisted_in_the_database(client):
         ).all()
 
     assert rows == [("持久化校验", "重启后应仍然存在", False)]
+
+
+# ---------- 鉴权 ----------
+# client fixture 的默认请求头里带了测试 key，而 httpx 无法用「传 None」来去掉
+# 一个默认 header，所以负向用例改用不带默认头的裸 client。
+
+
+def test_missing_api_key_is_rejected(client):
+    with TestClient(app) as anon:
+        assert anon.get(ITEMS).status_code == 401
+
+
+def test_wrong_api_key_is_rejected(client):
+    with TestClient(app) as anon:
+        response = anon.get(ITEMS, headers={"X-API-Key": "not-the-right-key"})
+    assert response.status_code == 401
+
+
+def test_correct_api_key_is_accepted(client):
+    response = client.get(ITEMS)
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_health_stays_public_without_api_key(client):
+    with TestClient(app) as anon:
+        response = anon.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "healthy"}
+
+
+def test_docs_are_disabled_by_default(client):
+    # 测试环境没有设置 ENABLE_DOCS，等价于生产默认配置：
+    # /docs、/redoc、/openapi.json 三个文档入口全部关闭
+    with TestClient(app) as anon:
+        assert anon.get("/docs").status_code == 404
+        assert anon.get("/redoc").status_code == 404
+        assert anon.get("/openapi.json").status_code == 404

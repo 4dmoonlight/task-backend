@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>待办事项</title>
+  <meta name="description" content="待办事项的主页。">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fbfbfd" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0d0e11" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%230a6cff'/%3E%3Cpath d='M9.5 16.5l4.5 4.5 8.5-9' fill='none' stroke='%23fff' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    :root {
+      --bg: #fbfbfd;
+      --text: #16171c;
+      --muted: #61646e;
+      --rule: #e5e6ec;
+      --accent: #0a63eb;
+      --mark-bg: #0a6cff;
+      --mark-fg: #ffffff;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0d0e11;
+        --text: #edeef2;
+        --muted: #9a9dab;
+        --rule: #24262e;
+        --accent: #6ba4ff;
+        --mark-bg: #6ba4ff;
+        --mark-fg: #0d0e11;
+      }
+    }
+
+    html { -webkit-text-size-adjust: 100%; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: clamp(1.8rem, 6vw, 2.6rem);
+      padding: clamp(2.5rem, 9vw, 5rem) clamp(1.25rem, 6vw, 2rem);
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                   "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+      font-size: 17px;
+      line-height: 1.7;
+      -webkit-font-smoothing: antialiased;
+      text-align: center;
+    }
+
+    a { color: var(--accent); text-underline-offset: .18em; }
+
+    :focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 6px;
+    }
+
+    .welcome {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: clamp(1rem, 3.5vw, 1.4rem);
+      max-width: 30rem;
+    }
+
+    .mark {
+      display: grid;
+      place-items: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: var(--mark-bg);
+      color: var(--mark-fg);
+    }
+    .mark svg { width: 19px; height: 19px; }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(1.75rem, 7vw, 2.6rem);
+      line-height: 1.2;
+      letter-spacing: -.02em;
+      font-weight: 700;
+    }
+
+    .welcome p {
+      margin: 0;
+      max-width: 25em;
+      font-size: clamp(.98rem, 2.4vw, 1.08rem);
+      color: var(--muted);
+    }
+
+    footer {
+      padding-top: clamp(1.4rem, 4vw, 2rem);
+      border-top: 1px solid var(--rule);
+      width: min(22rem, 100%);
+      font-size: .8rem;
+      line-height: 1.6;
+      color: var(--muted);
+    }
+    footer p { margin: 0; }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; animation: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="welcome">
+    <span class="mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+    </span>
+
+    <h1>待办事项</h1>
+
+    <p>
+      这里是待办事项的主页，一个放待办清单的地方。
+    </p>
+  </main>
+
+  <footer>
+    <p>© 2026 待办事项 · 页面本身不收集任何数据。</p>
+  </footer>
+</body>
+</html>
