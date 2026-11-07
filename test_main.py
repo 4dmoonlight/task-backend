@@ -1,5 +1,6 @@
 """接口集成测试：在真实 Postgres 上验证读写、过滤与持久化。"""
 
+import base64
 import os
 
 # main.py 在 import 时就会读取 API_KEY，缺失直接抛 RuntimeError，所以必须在
@@ -18,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import delete, text
 
 import db as db_module
+import main as main_module
 from db import Item
 from main import app
 
@@ -217,3 +219,125 @@ def test_docs_are_disabled_by_default(client):
         assert anon.get("/docs").status_code == 404
         assert anon.get("/redoc").status_code == 404
         assert anon.get("/openapi.json").status_code == 404
+
+
+# ---------- 受保护的文档入口 ----------
+# require_docs_auth 每次请求都会重新读模块级 _ENABLE_DOCS，
+# 所以可以用 monkeypatch 在运行时打开开关，验证 401 与 200 两条路径。
+
+# 所有文档 401 的响应头必须完全一致：带 realm 浏览器才会弹登录框。
+# 注意是精确相等，不是「包含 Basic」——之前内置 HTTPBasic 在解析层失败时
+# 给出的是不带 realm 的 `Basic`，只断言包含就会漏掉这个不一致。
+EXPECTED_CHALLENGE = 'Basic realm="docs"'
+
+DOCS_PATHS = ["/docs", "/openapi.json"]
+
+
+@pytest.fixture()
+def docs_enabled(monkeypatch):
+    monkeypatch.setattr(main_module, "_ENABLE_DOCS", True)
+
+
+def _basic(pair: str) -> str:
+    """把 `user:password` 编码成 Authorization 头的值。"""
+    return "Basic " + base64.b64encode(pair.encode("utf-8")).decode("ascii")
+
+
+def _assert_challenged(response):
+    assert response.status_code == 401
+    assert response.headers.get("WWW-Authenticate") == EXPECTED_CHALLENGE
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_missing_credentials(docs_enabled, path):
+    with TestClient(app) as anon:
+        response = anon.get(path)
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_wrong_password(docs_enabled, path):
+    with TestClient(app) as anon:
+        response = anon.get(path, auth=("docs", "wrong-password"))
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_non_basic_scheme(docs_enabled, path):
+    """Bearer 等其他方案必须走同一条 401 出口，头与其它失败一致。"""
+    with TestClient(app) as anon:
+        response = anon.get(path, headers={"Authorization": "Bearer abc123"})
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_invalid_base64(docs_enabled, path):
+    """Basic 后面不是合法 base64。内置 HTTPBasic 在解析层抛的 401 不带 realm。"""
+    with TestClient(app) as anon:
+        response = anon.get(path, headers={"Authorization": "Basic !!!"})
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_when_base64_has_no_colon(docs_enabled, path):
+    """解出来的内容里没有冒号，无法拆成 user:password。"""
+    with TestClient(app) as anon:
+        response = anon.get(
+            path,
+            headers={"Authorization": _basic("no-colon-here")},
+        )
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", DOCS_PATHS)
+def test_docs_reject_non_ascii_password(docs_enabled, path):
+    """非 ASCII 密码：不能因为解码异常变成 500，必须仍是标准 401。"""
+    with TestClient(app) as anon:
+        response = anon.get(
+            path,
+            headers={"Authorization": _basic("docs:这不是密钥")},
+        )
+    _assert_challenged(response)
+
+
+def test_docs_accept_correct_password(docs_enabled):
+    with TestClient(app) as anon:
+        response = anon.get("/docs", auth=("docs", TEST_API_KEY))
+    assert response.status_code == 200
+    # Swagger UI 的 HTML，且数据源指向同一个受保护的 schema
+    assert "swagger" in response.text.lower()
+    assert "/openapi.json" in response.text
+
+
+def test_docs_accept_empty_username(docs_enabled):
+    """用户名不校验，空用户名也应通过。"""
+    with TestClient(app) as anon:
+        response = anon.get("/docs", headers={"Authorization": _basic(":" + TEST_API_KEY)})
+    assert response.status_code == 200
+
+
+def test_docs_username_is_not_checked(docs_enabled):
+    """用户名不校验，只校验密码——固定写死 docs 只是为了让登录框有提示。"""
+    with TestClient(app) as anon:
+        response = anon.get("/openapi.json", auth=("any-name", TEST_API_KEY))
+    assert response.status_code == 200
+
+
+def test_openapi_json_accepts_correct_password(docs_enabled):
+    with TestClient(app) as anon:
+        response = anon.get("/openapi.json", auth=("docs", TEST_API_KEY))
+    assert response.status_code == 200
+    schema = response.json()
+    assert schema["info"]["title"] == "Core API Service"
+    # 业务端点仍然在 schema 里，路径与改造前一致
+    assert "/api/v1/items" in schema["paths"]
+    # 两个文档端点自身都不进 schema
+    assert "/docs" not in schema["paths"]
+    assert "/openapi.json" not in schema["paths"]
+
+
+def test_docs_query_key_is_not_accepted(docs_enabled):
+    """禁止把密钥放 URL query：会泄漏到浏览器历史、Referer 与 nginx access log。"""
+    with TestClient(app) as anon:
+        response = anon.get("/docs", params={"key": TEST_API_KEY})
+    _assert_challenged(response)
