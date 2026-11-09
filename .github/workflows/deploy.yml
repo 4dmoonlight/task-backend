@@ -90,7 +90,11 @@ jobs:
           # 会保留目录名，落到 /opt/task-backend/web/；写成 web/* 会把文件摊平到
           # /opt/task-backend/ 根下，nginx 的 root 就指不到 index.html 了。
           # deploy/ 下的脚本同理保留 deploy/ 这一层。
-          source: "Dockerfile,compose.yml,main.py,db.py,requirements.txt,.dockerignore,deploy/setup-https.sh,deploy/install-h5-site.sh,deploy/h5.conf,web"
+          #
+          # static/ 同样写目录名：它是 /docs 的 Swagger UI 静态资源
+          # （swagger-ui-dist 5.34.1 的 bundle.js 与 css），落到 /opt/task-backend/static/。
+          # 缺失会导致文档页白屏，main.py 启动时会因此 fail-fast 直接拒绝启动。
+          source: "Dockerfile,compose.yml,main.py,db.py,requirements.txt,.dockerignore,deploy/setup-https.sh,deploy/install-h5-site.sh,deploy/h5.conf,web,static"
           target: "/opt/task-backend"
           overwrite: true
 

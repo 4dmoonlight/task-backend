@@ -341,3 +341,60 @@ def test_docs_query_key_is_not_accepted(docs_enabled):
     with TestClient(app) as anon:
         response = anon.get("/docs", params={"key": TEST_API_KEY})
     _assert_challenged(response)
+
+
+# ---------- 自托管的 Swagger UI 静态资源 ----------
+
+DOCS_ASSETS = [
+    ("/docs/swagger-ui-bundle.js", "application/javascript"),
+    ("/docs/swagger-ui.css", "text/css"),
+]
+
+
+@pytest.mark.parametrize("path", [p for p, _ in DOCS_ASSETS])
+def test_docs_assets_hidden_when_docs_disabled(client, path):
+    with TestClient(app) as anon:
+        assert anon.get(path).status_code == 404
+        # 即使带了正确凭据，未开启时也是 404：开关优先于鉴权
+        assert anon.get(path, auth=("docs", TEST_API_KEY)).status_code == 404
+
+
+@pytest.mark.parametrize("path", [p for p, _ in DOCS_ASSETS])
+def test_docs_assets_reject_missing_credentials(docs_enabled, path):
+    with TestClient(app) as anon:
+        response = anon.get(path)
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path", [p for p, _ in DOCS_ASSETS])
+def test_docs_assets_reject_wrong_password(docs_enabled, path):
+    with TestClient(app) as anon:
+        response = anon.get(path, auth=("docs", "wrong-password"))
+    _assert_challenged(response)
+
+
+@pytest.mark.parametrize("path,media_type", DOCS_ASSETS)
+def test_docs_assets_served_with_correct_type(docs_enabled, path, media_type):
+    with TestClient(app) as anon:
+        response = anon.get(path, auth=("docs", TEST_API_KEY))
+    assert response.status_code == 200
+    # Starlette 会给 text/* 追加 "; charset=utf-8"，所以按前缀比
+    assert response.headers["content-type"].split(";")[0].strip() == media_type
+    assert len(response.content) > 0
+
+
+def test_docs_page_has_no_external_resources(docs_enabled):
+    with TestClient(app) as anon:
+        response = anon.get("/docs", auth=("docs", TEST_API_KEY))
+    assert response.status_code == 200
+    html = response.text
+    assert "cdn.jsdelivr.net" not in html
+    assert "fastapi.tiangolo.com" not in html
+    # 更彻底的一条：页面里不应出现任何 https:// 外链
+    #（上面两个域名都是 https 形式，这条能把同类外链一并锁死）。
+    # 刻意不断言 http://：favicon 的 data URI 里含 SVG 命名空间
+    # http://www.w3.org/2000/svg，那是 XML 语法的一部分，不是网络请求，
+    # 断言 http:// 会误伤。
+    assert "https://" not in html
+    assert "/docs/swagger-ui-bundle.js" in html
+    assert "/docs/swagger-ui.css" in html

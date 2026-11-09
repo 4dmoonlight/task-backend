@@ -3,10 +3,11 @@ import binascii
 import os
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional
 from datetime import datetime
@@ -29,6 +30,33 @@ if not API_KEY:
 # 注意：每次请求都会重新读这个模块级变量（见 require_docs_auth），
 # 所以测试可以用 monkeypatch 在运行时打开它来验证 401 / 200 两条路径。
 _ENABLE_DOCS = os.getenv("ENABLE_DOCS", "").strip() == "1"
+
+# /docs 的 Swagger UI 静态资源，自托管，不依赖任何 CDN。
+# 路径相对本文件定位，与进程 cwd 无关。
+STATIC_DIR = Path(__file__).parent / "static"
+SWAGGER_JS = STATIC_DIR / "swagger-ui-bundle.js"
+SWAGGER_CSS = STATIC_DIR / "swagger-ui.css"
+
+# 启动即校验：与 API_KEY 同样 fail-fast，避免文档页线上白屏这种静默失败。
+# 不论 ENABLE_DOCS 是否开启都检查，保证镜像本身是完整的。
+_missing_static = [
+    str(p) for p in (SWAGGER_JS, SWAGGER_CSS)
+    if not p.is_file() or p.stat().st_size == 0
+]
+if _missing_static:
+    raise RuntimeError(
+        "Swagger UI 静态资源缺失或为空：" + ", ".join(_missing_static)
+        + "。这些文件来自 swagger-ui-dist 5.34.1，应随代码一起部署在仓库的 static/ 目录"
+        "（检查 CI 的 scp 白名单与 .dockerignore 是否包含 static/）。"
+    )
+
+# 文档页 favicon：与欢迎页同一个内联 SVG，不引用外部站点。
+DOCS_FAVICON = (
+    "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E"
+    "%3Ccircle cx='16' cy='16' r='15' fill='%230a6cff'/%3E"
+    "%3Cpath d='M9.5 16.5l4.5 4.5 8.5-9' fill='none' stroke='%23fff' stroke-width='3' "
+    "stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+)
 
 
 @asynccontextmanager
@@ -149,10 +177,45 @@ def require_docs_auth(authorization: Optional[str] = Header(default=None)) -> No
 
 @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_docs_auth)])
 def docs_ui():
-    """Swagger UI。数据源指向下面那个同样受保护的 /openapi.json。"""
+    """Swagger UI。数据源指向下面那个同样受保护的 /openapi.json。
+
+    JS / CSS 走自托管路由，favicon 用 data URI，页面不引用任何外网资源。
+    """
     return get_swagger_ui_html(
         openapi_url="/openapi.json",
         title=f"{app.title} - Docs",
+        swagger_js_url="/docs/swagger-ui-bundle.js",
+        swagger_css_url="/docs/swagger-ui.css",
+        swagger_favicon_url=DOCS_FAVICON,
+    )
+
+
+# 静态资源与 /docs 同样受 Basic 保护：浏览器在 /docs 输过一次密码后，
+# 对同一 realm 下的子资源会自动带上 Authorization，无需再次输入。
+@app.get(
+    "/docs/swagger-ui-bundle.js",
+    include_in_schema=False,
+    dependencies=[Depends(require_docs_auth)],
+)
+def docs_swagger_js():
+    # private：资源在 Basic 鉴权之后才有意义，不能让共享缓存留存。
+    return FileResponse(
+        SWAGGER_JS,
+        media_type="application/javascript",
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
+@app.get(
+    "/docs/swagger-ui.css",
+    include_in_schema=False,
+    dependencies=[Depends(require_docs_auth)],
+)
+def docs_swagger_css():
+    return FileResponse(
+        SWAGGER_CSS,
+        media_type="text/css",
+        headers={"Cache-Control": "private, max-age=86400"},
     )
 
 
